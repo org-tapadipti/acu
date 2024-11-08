@@ -1,25 +1,7 @@
-from abc import ABCMeta, abstractmethod
+# This file is a modified copy of base.py from Anthropic's Computer Use Demo project
+# Original file: https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo/computer_use_demo/tools
+
 from dataclasses import dataclass, fields, replace
-from typing import Any
-
-from anthropic.types.beta import BetaToolUnionParam
-
-
-class BaseAnthropicTool(metaclass=ABCMeta):
-    """Abstract base class for Anthropic-defined tools."""
-
-    @abstractmethod
-    def __call__(self, **kwargs) -> Any:
-        """Executes the tool with the given arguments."""
-        ...
-
-    @abstractmethod
-    def to_params(
-        self,
-    ) -> BetaToolUnionParam:
-        raise NotImplementedError
-
-
 @dataclass(kw_only=True, frozen=True)
 class ToolResult:
     """Represents the result of a tool execution."""
@@ -53,17 +35,3 @@ class ToolResult:
         """Returns a new ToolResult with the given fields replaced."""
         return replace(self, **kwargs)
 
-
-class CLIResult(ToolResult):
-    """A ToolResult that can be rendered as a CLI output."""
-
-
-class ToolFailure(ToolResult):
-    """A ToolResult that represents a failure."""
-
-
-class ToolError(Exception):
-    """Raised when a tool encounters an error."""
-
-    def __init__(self, message):
-        self.message = message

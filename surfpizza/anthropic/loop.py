@@ -1,3 +1,6 @@
+# This file is a modified copy of loop.py from Anthropic's Computer Use Demo project
+# Original file: https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo/computer_use_demo/tools
+
 from typing import cast
 
 from anthropic.types.beta import (

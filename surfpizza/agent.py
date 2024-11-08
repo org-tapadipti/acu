@@ -1,26 +1,22 @@
+import base64
 import json
 import logging
 import os
 import time
 import traceback
-from typing import Final, List, Optional, Tuple, Type, cast, Any
 from datetime import datetime
-from PIL import Image
-import base64
 from io import BytesIO
+from typing import Any, cast, Final, List, Optional, Tuple, Type
 
 from agentdesk.device_v1 import Desktop
 from devicebay import Device
 from pydantic import BaseModel
 from rich.console import Console
 from rich.json import JSON
-from skillpacks import EnvState
-from skillpacks.server.models import V1ActionSelection
 from surfkit.agent import TaskAgent
 from taskara import Task, TaskStatus
 from tenacity import before_sleep_log, retry, stop_after_attempt
-from threadmem import RoleMessage, RoleThread
-from mllm import Prompt
+from threadmem import RoleThread
 from toolfuse.util import AgentUtils
 
 from anthropic import (
@@ -30,19 +26,13 @@ from anthropic import (
     APIStatusError,
 )
 from anthropic.types.beta import (
-    BetaCacheControlEphemeralParam,
-    BetaContentBlockParam,
-    BetaImageBlockParam,
-    BetaMessage,
     BetaMessageParam,
-    BetaTextBlock,
     BetaTextBlockParam,
     BetaToolResultBlockParam,
-    BetaToolUseBlockParam,
 )
 
-from .tool import SemanticDesktop, router
-from .anthropic import ComputerTool, ToolCollection, ToolResult, response_to_params, make_api_tool_result
+from .tool import SemanticDesktop
+from .anthropic import ToolResult, response_to_params, make_api_tool_result
 
 logging.basicConfig(level=logging.INFO)
 logger: Final = logging.getLogger(__name__)
@@ -50,10 +40,19 @@ logger.setLevel(int(os.getenv("LOG_LEVEL", str(logging.DEBUG))))
 
 console = Console(force_terminal=True)
 
-tool_collection = ToolCollection(
-        ComputerTool(),
-    )
-print("API KEY: ", os.environ["ANTHROPIC_API_KEY"])
+# Define Anthropic Computer Use tool. Refer to the docs at https://docs.anthropic.com/en/docs/build-with-claude/computer-use#computer-tool
+tool_collection = [
+        {
+          "type": "computer_20241022",
+          "name": "computer",
+          "display_width_px": 1024,
+          "display_height_px": 768,
+          "display_number": 1,
+        },
+]
+
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    raise ValueError ("Please set the ANTHROPIC_API_KEY in your environment.")
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 tools_mapping = {
@@ -107,24 +106,18 @@ class SurfPizza(TaskAgent):
 
         # Wrap the standard desktop in our special tool
         semdesk = SemanticDesktop(task=task, desktop=device)
-        computer = ComputerTool()
 
         # Add standard agent utils to the device
         semdesk.merge(AgentUtils())
-
-        # # Open a site if present in the parameters
-        # site = task._parameters.get("site") if task._parameters else None
-        # if site:
-        #     console.print(f"▶️ opening site url: {site}", style="blue")
-        #     task.post_message("assistant", f"opening site url {site}...")
-        #     semdesk.desktop.open_url(site)
-        #     console.print("waiting for browser to open...", style="blue")
-        #     time.sleep(5)
 
         # Get info about the desktop
         info = semdesk.desktop.info()
         screen_size = info["screen_size"]
         console.print(f"Desktop info: {screen_size}")
+
+        # This prompt is a modified copy of the prompt from Anthropic's Computer Use Demo project
+        # Some other code lines in this file are also copied from Anthropic's Computer Use Demo project
+        # Original file: https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo/computer_use_demo/tools
 
         SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
         * You are utilising an Linux virtual machine of screen size {screen_size} with internet access.
@@ -144,32 +137,19 @@ class SurfPizza(TaskAgent):
             text=f"{SYSTEM_PROMPT}",
         )
 
-        # Create our thread and start with a system prompt
-        thread = RoleThread()
+        # Create the messages thread and start with the task description
         messages = []
-        thread.post(
-            role="user",
-            msg=(
-                f"Y{SYSTEM_PROMPT}"
-                f"Your current task is {task.description}."
-            ),
-        )
-
         messages.append(
             {
                 "role": "user",
                 "content": [BetaTextBlockParam(type="text", text=task.description)],
             })
 
-        # Loop to run actions
-        max_steps = 30
-        print(f"\n\nMax steps: {max_steps}")
-
         for i in range(max_steps):
             console.print(f"-------step {i + 1}", style="green")
 
             try:
-                thread, messages, done = self.take_action(semdesk, computer, messages, task, thread)
+                messages, done = self.take_action(semdesk, messages, task)
             except Exception as e:
                 console.print(f"Error: {e}", style="red")
                 task.status = TaskStatus.FAILED
@@ -198,17 +178,15 @@ class SurfPizza(TaskAgent):
     def take_action(
         self,
         semdesk: SemanticDesktop,
-        computer: ComputerTool,
         messages: list[BetaMessageParam],
         task: Task,
-        thread: RoleThread,
     ) -> Tuple[RoleThread, bool]:
         """Take an action
 
         Args:
             desktop (SemanticDesktop): Desktop to use
             task (str): Task to accomplish
-            thread (RoleThread): Role thread for the task
+            messages: Messages (LLM exchange thread) for the task
 
         Returns:
             bool: Whether the task is complete
@@ -226,13 +204,9 @@ class SurfPizza(TaskAgent):
                 if task.status == TaskStatus.CANCELING:
                     task.status = TaskStatus.CANCELED
                     task.save()
-                return thread, messages, True
+                return messages, True
 
             console.print("taking action...", style="white")
-
-            # Create a copy of the thread, and remove old images
-            _thread = thread.copy()
-            # _thread.remove_images()
 
             try:
                 raw_response = client.beta.messages.with_raw_response.create(
@@ -240,29 +214,24 @@ class SurfPizza(TaskAgent):
                     messages=messages,
                     model="claude-3-5-sonnet-20241022",
                     system=[self.system],
-                    tools=tool_collection.to_params(),
+                    tools=tool_collection,#.to_params(),
                     betas=["computer-use-2024-10-22"],
                 )
             except (APIStatusError, APIResponseValidationError, APIError) as e:
                 console.print("Error taking action: ", e)
                 traceback.print_exc()
                 task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
-                raise e
-                # return _thread, messages, True
+                return messages, True
             except Exception as e:
                 console.print("Exception taking action: ", e)
                 traceback.print_exc()
                 task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
-                raise e
-                # return _thread, messages, True
-
-            response = json.loads(raw_response.content.decode('utf-8'))
-            print(f"\n\n\nResponse type:\n{type(response)}")
-            print(f"Response:\n{response}")
+                return messages, True
 
             f_response = raw_response.parse()
             print(f"\n\n\nFreshly parsed Response type:\n{type(f_response)}")
             print(f"Response:\n{f_response}")
+            print(f"stop reason:\n{f_response.stop_reason}")
             response_params = response_to_params(f_response)
             print(f"\n\n\nresponse_params type:\n{type(response_params)}")
             print(f"response_params:\n{response_params}")
@@ -274,56 +243,22 @@ class SurfPizza(TaskAgent):
                 }
             )
 
-            # Craft the message asking the MLLM for an action
-            for resp_content in response["content"]:
-                if resp_content["type"] == "text":
-                    msg = RoleMessage(
-                        role=response["role"],
-                        text=resp_content["text"],
-                        metadata={
-                            'type': resp_content["type"]
-                        })
-                elif resp_content["type"] == "tool_use":
-                    msg = RoleMessage(
-                        role=response["role"],
-                        text="",
-                        metadata=resp_content
-                    )
-
-                _thread.add_msg(msg)
-
-            # prompt = Prompt(
-            #     thread=thread,
-            #     response=resp_msg,
-            #     response_schema=expect,  # type: ignore
-            #     namespace=namespace,
-            #     agent_id=agent_id,
-            #     owner_id=owner_id,
-            #     model=response.model or model,
-            #     logits=logits,
-            #     logit_metrics=metrics,
-            #     temperature=temperature,
-            # )
-
-            # task.add_prompt(response.prompt)
-
-            if response["stop_reason"] == "end_turn":
+            if f_response.stop_reason == "end_turn":
                 console.print("final result: ", style="green")
-                console.print(JSON.from_data(response["content"][0]))
+                console.print(JSON.from_data(response_params[0]))
                 task.post_message(
                     "assistant",
-                    f"✅ I think the task is done, please review the result: {response['content'][0]['text']}",
+                    f"✅ I think the task is done, please review the result: {response_params[0]['text']}",
                 )
                 task.status = TaskStatus.FINISHED
                 task.save()
-                return _thread, messages, True
+                return messages, True
 
             tool_result_content: list[BetaToolResultBlockParam] = []
             for content_block in response_params:
-                if content_block["type"] == "tool_use":
+                if content_block["type"] == "text":
                     task.post_message("assistant", f"👁️ {content_block.get('text')}")
-                    # task.post_message("assistant", f"💡 {selection.reason}")
-
+                elif content_block["type"] == "tool_use":
                     input_args = cast(dict[str, Any], content_block["input"])
                     action_name = tools_mapping[input_args["action"]]
                     
@@ -349,18 +284,6 @@ class SurfPizza(TaskAgent):
                             make_api_tool_result(result, content_block["id"])
                         )
 
-                        msg = RoleMessage(
-                            role="user",
-                            text="",
-                            # images=result.base64_image,#content[0]["source"]["data"],#[result["screenshot"]],
-                            metadata={
-                                "type": "tool_result",
-                                "tool_use_id": content_block["id"],
-                            }
-                        )
-                        print(f"\nCreated msg: {msg}")
-                        _thread.add_msg(msg)
-
                     except Exception as e:
                         print(f"Error occurred: {str(e)}")
                         print(f"Error type: {type(e)}")
@@ -368,23 +291,11 @@ class SurfPizza(TaskAgent):
                     print("Finished tool_use")
             
             if not tool_result_content:
-                return _thread, messages, True
+                return messages, True
 
             messages.append({"content": tool_result_content, "role": "user"})
 
-            #     # # Record the action for feedback and tuning
-            #     # task.record_action(
-            #     #     state=EnvState(images=[screenshot_img]),
-            #     #     prompt=response.prompt,
-            #     #     action=selection.action,
-            #     #     tool=semdesk.ref(),
-            #     #     result=action_response,
-            #     #     agent_id=self.name(),
-            #     #     model=response.model,
-            #     # )
-
-            # # _thread.add_msg(response.msg)
-            return _thread, messages, False
+            return messages, False
 
         except Exception as e:
             console.print("Exception taking action: ", e)
@@ -416,23 +327,10 @@ class SurfPizza(TaskAgent):
         screenshot_img = semdesk.desktop.take_screenshots()[-1]
         console.print(f"screenshot img type: {type(screenshot_img)}")
 
-        # # Screenshot by taken semdesk is in the format "data:image/png;base64,iVBORw0KGgoAAAA..."
-        # # We should remove the "data:image/png;base64," part from the beginning and only keep the actual image part
-        # comma_index = screenshot_img.index(',')
-        # base64_image = screenshot_img[comma_index+1:]
-
-
-
         buffer = BytesIO()
         screenshot_img.save(buffer, format='PNG')
-        # img_bytes = screenshot_img.tobytes()
-        # base64_image = base64.b64encode(img_bytes).decode('utf-8')
         base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
-
         print(f"\n\n\n\n\nbase64_image: type = {type(base64_image)}\n len = {len(base64_image)}\n content = {base64_image[0:200]}")
-
-        # image.save(buffered, format="JPEG")
-        # img_str = base64.b64encode(buffered.getvalue())
 
         return ToolResult(output=None, error=None, base64_image=base64_image)
 
