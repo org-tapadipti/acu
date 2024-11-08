@@ -7,6 +7,7 @@ from typing import Final, List, Optional, Tuple, Type, cast, Any
 from datetime import datetime
 from PIL import Image
 import base64
+from io import BytesIO
 
 from agentdesk.device_v1 import Desktop
 from devicebay import Device
@@ -160,6 +161,7 @@ class SurfPizza(TaskAgent):
 
         # Create our thread and start with a system prompt
         thread = RoleThread()
+        messages = []
         thread.post(
             role="user",
             msg=(
@@ -167,6 +169,12 @@ class SurfPizza(TaskAgent):
                 f"Your current task is {task.description}."
             ),
         )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": [BetaTextBlockParam(type="text", text=task.description)],
+            })
         # response = router.chat(thread, namespace="system")
         # console.print(f"system prompt response: {response}", style="blue")
         # thread.add_msg(response.msg)
@@ -174,6 +182,7 @@ class SurfPizza(TaskAgent):
         # Loop to run actions
         max_steps = 30
         print(f"\n\nMax steps: {max_steps}")
+
         for i in range(max_steps):
             console.print(f"-------step {i + 1}", style="green")
 
@@ -181,7 +190,7 @@ class SurfPizza(TaskAgent):
                 # for message in thread.messages():
                 #     print(f"\n\n\nStill in solve task. Looping through messages in thread. First message = {message}")
                 #     break
-                thread, done = self.take_action(semdesk, computer, task, thread)
+                thread, messages, done = self.take_action(semdesk, computer, messages, task, thread)
             except Exception as e:
                 console.print(f"Error: {e}", style="red")
                 task.status = TaskStatus.FAILED
@@ -211,6 +220,7 @@ class SurfPizza(TaskAgent):
         self,
         semdesk: SemanticDesktop,
         computer: ComputerTool,
+        messages: list[BetaMessageParam],
         task: Task,
         thread: RoleThread,
     ) -> Tuple[RoleThread, bool]:
@@ -237,7 +247,7 @@ class SurfPizza(TaskAgent):
                 if task.status == TaskStatus.CANCELING:
                     task.status = TaskStatus.CANCELED
                     task.save()
-                return thread, True
+                return thread, messages, True
 
             console.print("taking action...", style="white")
 
@@ -278,70 +288,70 @@ class SurfPizza(TaskAgent):
             #     agent_id=self.name(),
             # )
 
-            messages_to_send = []
-            msgs = _thread.messages()
-            # msgs = [_thread.messages()[0], _thread.messages()[-1]]
-            idx = 0
-            for message in msgs:#_thread.messages():
-                idx += 1
-                print(f"\n\n\nLooping through messages in thread. Message #{idx} = {message}")
-                r = message.role
-                print(f"\n\nr: {r}")
-                content = []
+            # # messages_to_send = []
+            # msgs = _thread.messages()
+            # # msgs = [_thread.messages()[0], _thread.messages()[-1]]
+            # idx = 0
+            # for message in msgs:#_thread.messages():
+            #     idx += 1
+            #     print(f"\n\n\nLooping through messages in thread. Message #{idx} = {message}")
+            #     r = message.role
+            #     print(f"\n\nr: {r}")
+            #     content = []
 
-                if r == "assistant":
-                    print("in assistant message")
+            #     if r == "assistant":
+            #         print("in assistant message")
 
-                    if message.metadata["type"] == "text":
-                        content.append({
-                            "type": message.metadata["type"],
-                            "text": message.text
-                        })
-                    elif message.metadata["type"] == "tool_use":
-                        content.append({
-                            "type": message.metadata["type"],
-                            "id":message.metadata["id"],
-                            "name":message.metadata["name"],
-                            "input":message.metadata["input"],
-                        })
+            #         if message.metadata["type"] == "text":
+            #             content.append({
+            #                 "type": message.metadata["type"],
+            #                 "text": message.text
+            #             })
+            #         elif message.metadata["type"] == "tool_use":
+            #             content.append({
+            #                 "type": message.metadata["type"],
+            #                 "id":message.metadata["id"],
+            #                 "name":message.metadata["name"],
+            #                 "input":message.metadata["input"],
+            #             })
 
-                else:
-                    if message.images:
-                        i = message.images[0]
-                        if i:
-                            comma_index = i.index(',')
-                            base64_image = i[comma_index+1:]
-                            # img_bytes = i.tobytes()
-                            # base64_image = base64.b64encode(img_bytes).decode('utf-8')
+            #     else:
+            #         if message.images:
+            #             i = message.images[0]
+            #             if i:
+            #                 comma_index = i.index(',')
+            #                 base64_image = i[comma_index+1:]
+            #                 # img_bytes = i.tobytes()
+            #                 # base64_image = base64.b64encode(img_bytes).decode('utf-8')
                             
-                            c = {"type": "image", 
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": base64_image,
-                                }}
+            #                 c = {"type": "image", 
+            #                     "source": {
+            #                         "type": "base64",
+            #                         "media_type": "image/png",
+            #                         "data": base64_image,
+            #                     }}
                             
-                            if message.metadata and message.metadata.get("tool_use_id"):
-                                print("in here")
-                                content.append({
-                                    "type": message.metadata["type"],
-                                    "tool_use_id": message.metadata["tool_use_id"],
-                                    "content": [c]
-                                })
-                            else:
-                                content.append(c)
+            #                 if message.metadata and message.metadata.get("tool_use_id"):
+            #                     print("in here")
+            #                     content.append({
+            #                         "type": message.metadata["type"],
+            #                         "tool_use_id": message.metadata["tool_use_id"],
+            #                         "content": [c]
+            #                     })
+            #                 else:
+            #                     content.append(c)
 
-                    else:
-                        if message.text:
-                            content.append({"type": "text", "text": message.text})
+            #         else:
+            #             if message.text:
+            #                 content.append({"type": "text", "text": message.text})
 
 
-                msg_to_send = {"role": r, "content": content}
+            #     msg_to_send = {"role": r, "content": content}
 
-                messages_to_send.append(msg_to_send)
+            #     messages_to_send.append(msg_to_send)
 
-            print(f"\n\nlen messages_to_send: {len(messages_to_send)}")
-            # print(f"\n\ messages_to_send: {messages_to_send}")
+            # print(f"\n\nlen messages_to_send: {len(messages_to_send)}")
+            # # print(f"\n\ messages_to_send: {messages_to_send}")
 
             # for mess in messages_to_send:
             #     print(f"\n\nrole: {mess['role']}")
@@ -365,17 +375,45 @@ class SurfPizza(TaskAgent):
             #                     print(f"source-media_type: {ci['source']['media_type']}")
             #                     print(f"source-data: {ci['source']['data'][0:200]}")
 
-            raw_response = client.beta.messages.with_raw_response.create(
-                max_tokens=4096,
-                messages=messages_to_send,
-                model="claude-3-5-sonnet-20241022",
-                system=[self.system],
-                tools=tool_collection.to_params(),
-                betas=["computer-use-2024-10-22"],
-            )
+            try:
+                raw_response = client.beta.messages.with_raw_response.create(
+                    max_tokens=4096,
+                    messages=messages,
+                    model="claude-3-5-sonnet-20241022",
+                    system=[self.system],
+                    tools=tool_collection.to_params(),
+                    betas=["computer-use-2024-10-22"],
+                )
+            except (APIStatusError, APIResponseValidationError, APIError) as e:
+                console.print("Error taking action: ", e)
+                traceback.print_exc()
+                task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
+                raise e
+                # return _thread, messages, True
+            except Exception as e:
+                console.print("Exception taking action: ", e)
+                traceback.print_exc()
+                task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
+                raise e
+                # return _thread, messages, True
+
             response = json.loads(raw_response.content.decode('utf-8'))
             print(f"\n\n\nResponse type:\n{type(response)}")
-            print(f"\n\n\nResponse:\n{response}")
+            print(f"Response:\n{response}")
+
+            f_response = raw_response.parse()
+            print(f"\n\n\nFreshly parsed Response type:\n{type(f_response)}")
+            print(f"Response:\n{f_response}")
+            response_params = self._response_to_params(f_response)
+            print(f"\n\n\nresponse_params type:\n{type(response_params)}")
+            print(f"response_params:\n{response_params}")
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response_params,
+                }
+            )
 
             # Craft the message asking the MLLM for an action
             for resp_content in response["content"]:
@@ -419,170 +457,253 @@ class SurfPizza(TaskAgent):
                 )
                 task.status = TaskStatus.FINISHED
                 task.save()
-                return _thread, True
-        
-            for content_block in response["content"]:
-                try:
-                    # if content_block["type"] == "text":
-                    #     _thread.add_msg(RoleMessage(role="user", text=content_block["text"]))
-                    # Post to the user letting them know what the modle selected
-                    if content_block["type"] == "tool_use":
-                        print("Entering tool_use")
-                        tool_use_id = content_block["id"]
-                        input_args = cast(dict[str, Any], content_block["input"])
-                        # print("Arg: ", cast(dict[str, Any], content_block["input"]))
-                        print("Arg: ", input_args)
-                        action_name = tools_mapping[input_args["action"]]
+                return _thread, messages, True
 
-                        # if not selection:
-                        #     raise ValueError("No action selection parsed")
-                        
-                        console.print("action selection: ", style="white")
-                        console.print(JSON.from_data(content_block["input"]))
+            tool_result_content: list[BetaToolResultBlockParam] = []
+            for content_block in response_params:
+                if content_block["type"] == "tool_use":
+                    task.post_message("assistant", f"👁️ {content_block.get('text')}")
+                    # task.post_message("assistant", f"💡 {selection.reason}")
 
-                        task.post_message("assistant", f"👁️ {response['content'][0].get('text')}")
-                        # task.post_message("assistant", f"💡 {selection.reason}")
+                    input_args = cast(dict[str, Any], content_block["input"])
+                    action_name = tools_mapping[input_args["action"]]
+                    
+                    task.post_message(
+                        "assistant",
+                        f"▶️ Taking action '{action_name}' with parameters: {input_args}",
+                    )
+
+                    action_params = input_args.copy()
+                    del action_params["action"]
+
+                    try:
+                        result = self._execute_action(semdesk, task, action_name, action_params)
 
                         task.post_message(
                             "assistant",
-                            f"▶️ Taking action '{action_name}' with parameters: {input_args}",
+                            "current image",
+                            # images=result.base64_image,
+                            thread="debug",
                         )
 
-                        try:
-                            # action_response = computer(**input_args)
-                            action_params = input_args.copy()
-                            del action_params["action"]
+                        tool_result_content.append(
+                            self._make_api_tool_result(result, content_block["id"])
+                        )
 
-                            # tools_mapping = {
-                            #     "key": "hot_key",
-                            #     "type": "type_text",
-                            #     "mouse_move": "move_mouse",
-                            #     "left_click": "click",
-                            #     "left_click_drag": "drag_mouse",
-                            #     "right_click": "N/A",
-                            #     "middle_click": "N/A",
-                            #     "double_click": "double_click",
-                            #     "screenshot": "take_screenshots",
-                            #     "cursor_position": "mouse_coordinates",
-                            # }
+                        msg = RoleMessage(
+                            role="user",
+                            text="",
+                            # images=result.base64_image,#content[0]["source"]["data"],#[result["screenshot"]],
+                            metadata={
+                                "type": "tool_result",
+                                "tool_use_id": content_block["id"],
+                            }
+                        )
+                        print(f"\nCreated msg: {msg}")
+                        _thread.add_msg(msg)
 
+                    except Exception as e:
+                        print(f"Error occurred: {str(e)}")
+                        print(f"Error type: {type(e)}")
+                        raise
+                    print("Finished tool_use")
+            
+            if not tool_result_content:
+                return _thread, messages, True
 
-                            if action_name != "screenshot":
-                                action = semdesk.find_action(action_name)
-                                console.print(f"\n\naction parameters: {action_params}")
-                                if action_name in ["move_mouse", "drag_mouse"] and "coordinate" in action_params:
-                                    action_params["x"] = action_params["coordinate"][0]
-                                    action_params["y"] = action_params["coordinate"][1]
-                                    del action_params["coordinate"]
-                                if action_name == "hot_key" and "text" in action_params:
-                                    action_params["keys"] = [action_params["text"]]
-                                    del action_params["text"]
-                                # if action.name == "click" and "coordinates" in selection.action.parameters:
-                                #     selection.action.parameters["x"] = selection.action.parameters["coordinates"][0]
-                                #     selection.action.parameters["y"] = selection.action.parameters["coordinates"][1]
-                                #     del selection.action.parameters["coordinates"]
-                                # elif action.name in ["take_screenshots", "double_click"] and "coordinates" in selection.action.parameters:
-                                #     del selection.action.parameters["coordinates"]
-                                # console.print("\n\nselection.action.parameters after modification: ", selection.action.parameters)
-                                print("just before semdesk call")
-                                action_response = semdesk.use(action, **action_params)
-                                print(f"\n\n\n\n\n\n\n\n\n\njust after semdesk call. Rseponse type = {type(action_response)}")
-                                # time.sleep(15)
-                                console.print(f"action output: {action_response}", style="blue")
-                                if action_response:
-                                    task.post_message(
-                                        "assistant", f"👁️ Result from taking action: {action_response}"
-                                    )
+            messages.append({"content": tool_result_content, "role": "user"})
+            
+            # for content_block in response["content"]:
+            #     try:
+            #         # if content_block["type"] == "text":
+            #         #     _thread.add_msg(RoleMessage(role="user", text=content_block["text"]))
+            #         # Post to the user letting them know what the modle selected
+            #         if content_block["type"] == "tool_use":
+            #             print("Entering tool_use")
+            #             tool_use_id = content_block["id"]
+            #             input_args = cast(dict[str, Any], content_block["input"])
+            #             # print("Arg: ", cast(dict[str, Any], content_block["input"]))
+            #             print("Arg: ", input_args)
+            #             action_name = tools_mapping[input_args["action"]]
 
-                                # action = semdesk.find_action("click")
-                                # action_response = semdesk.use(action)
-                                # Take a screenshot of the desktop and post a message with it
+            #             # if not selection:
+            #             #     raise ValueError("No action selection parsed")
+                        
+            #             console.print("action selection: ", style="white")
+            #             console.print(JSON.from_data(content_block["input"]))
 
-                            screenshot_img = semdesk.desktop.take_screenshots()[-1]
-                            console.print(f"screenshot img type: {type(screenshot_img)}")
-                            task.post_message(
-                                "assistant",
-                                "current image",
-                                images=[screenshot_img],
-                                thread="debug",
-                            )
+            #             task.post_message("assistant", f"👁️ {response['content'][0].get('text')}")
+            #             # task.post_message("assistant", f"💡 {selection.reason}")
 
-                            # _thread.remove_images()
+            #             task.post_message(
+            #                 "assistant",
+            #                 f"▶️ Taking action '{action_name}' with parameters: {input_args}",
+            #             )
 
-                            # Craft the message asking the MLLM for an action
-                            msg = RoleMessage(
-                                role="user",
-                                text="",
-                                images=[screenshot_img],
-                                metadata={
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_use_id,
-                                }
-                            )
-                            print(f"\nCreated msg: {msg}")
-                            _thread.add_msg(msg)
+            #             try:
+            #                 # action_response = computer(**input_args)
+            #                 # _execute_action()
+            #                 # _thread.remove_images()
+            #                 pass
+            #                 # Craft the message asking the MLLM for an action
+
                             
-                            # result = computer(**cast(dict[str, Any], content_block["input"]))
-                        except Exception as e:
-                            print(f"Error occurred: {str(e)}")
-                            print(f"Error type: {type(e)}")
-                            raise
-                        print("Finished tool_use")
+            #                 # result = computer(**cast(dict[str, Any], content_block["input"]))
+            #             except Exception as e:
+            #                 print(f"Error occurred: {str(e)}")
+            #                 print(f"Error type: {type(e)}")
+            #                 raise
+            #             print("Finished tool_use")
 
-                except Exception as e:
-                    console.print(f"Response failed to parse: {e}", style="red")
-                    raise
+            #     except Exception as e:
+            #         console.print(f"Response failed to parse: {e}", style="red")
+            #         raise
 
-                # # The agent will return 'result' if it believes it's finished
-                # if selection.action.name == "result":
-                #     console.print("final result: ", style="green")
-                #     console.print(JSON.from_data(selection.action.parameters))
-                #     task.post_message(
-                #         "assistant",
-                #         f"✅ I think the task is done, please review the result: {selection.action.parameters['value']}",
-                #     )
-                #     task.status = TaskStatus.FINISHED
-                #     task.save()
-                #     return _thread, True
+            #     # # The agent will return 'result' if it believes it's finished
+            #     # if selection.action.name == "result":
+            #     #     console.print("final result: ", style="green")
+            #     #     console.print(JSON.from_data(selection.action.parameters))
+            #     #     task.post_message(
+            #     #         "assistant",
+            #     #         f"✅ I think the task is done, please review the result: {selection.action.parameters['value']}",
+            #     #     )
+            #     #     task.status = TaskStatus.FINISHED
+            #     #     task.save()
+            #     #     return _thread, True
 
-                # # Find the selected action in the tool
-                # action = semdesk.find_action(selection.action.name)
-                # console.print(f"found action: {action}", style="blue")
-                # if not action:
-                #     console.print(f"action returned not found: {selection.action.name}")
-                #     raise SystemError("action not found")
+            #     # # Find the selected action in the tool
+            #     # action = semdesk.find_action(selection.action.name)
+            #     # console.print(f"found action: {action}", style="blue")
+            #     # if not action:
+            #     #     console.print(f"action returned not found: {selection.action.name}")
+            #     #     raise SystemError("action not found")
 
-                # # Take the selected action
-                # try:
-                #     action_response = semdesk.use(action, **selection.action.parameters)
-                # except Exception as e:
-                #     raise ValueError(f"Trouble using action: {e}")
+            #     # # Take the selected action
+            #     # try:
+            #     #     action_response = semdesk.use(action, **selection.action.parameters)
+            #     # except Exception as e:
+            #     #     raise ValueError(f"Trouble using action: {e}")
 
-                # console.print(f"action output: {action_response}", style="blue")
-                # if action_response:
-                #     task.post_message(
-                #         "assistant", f"👁️ Result from taking action: {action_response}"
-                #     )
+            #     # console.print(f"action output: {action_response}", style="blue")
+            #     # if action_response:
+            #     #     task.post_message(
+            #     #         "assistant", f"👁️ Result from taking action: {action_response}"
+            #     #     )
 
-                # # Record the action for feedback and tuning
-                # task.record_action(
-                #     state=EnvState(images=[screenshot_img]),
-                #     prompt=response.prompt,
-                #     action=selection.action,
-                #     tool=semdesk.ref(),
-                #     result=action_response,
-                #     agent_id=self.name(),
-                #     model=response.model,
-                # )
+            #     # # Record the action for feedback and tuning
+            #     # task.record_action(
+            #     #     state=EnvState(images=[screenshot_img]),
+            #     #     prompt=response.prompt,
+            #     #     action=selection.action,
+            #     #     tool=semdesk.ref(),
+            #     #     result=action_response,
+            #     #     agent_id=self.name(),
+            #     #     model=response.model,
+            #     # )
 
-            # _thread.add_msg(response.msg)
-            return _thread, False
+            # # _thread.add_msg(response.msg)
+            return _thread, messages, False
 
         except Exception as e:
             console.print("Exception taking action: ", e)
             traceback.print_exc()
             task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
             raise e
+
+    def _response_to_params(self, 
+        response: BetaMessage,
+    ) -> list[BetaTextBlockParam | BetaToolUseBlockParam]:
+        res: list[BetaTextBlockParam | BetaToolUseBlockParam] = []
+        for block in response.content:
+            if isinstance(block, BetaTextBlock):
+                res.append({"type": "text", "text": block.text})
+            else:
+                res.append(cast(BetaToolUseBlockParam, block.model_dump()))
+        return res
+
+    def _execute_action(self, semdesk, task, action_name, action_params) -> ToolResult:
+        if action_name != "screenshot":
+            action = semdesk.find_action(action_name)
+            console.print(f"\n\naction parameters: {action_params}")
+            if action_name in ["move_mouse", "drag_mouse"] and "coordinate" in action_params:
+                action_params["x"] = action_params["coordinate"][0]
+                action_params["y"] = action_params["coordinate"][1]
+                del action_params["coordinate"]
+            if action_name == "hot_key" and "text" in action_params:
+                action_params["keys"] = [action_params["text"]]
+                del action_params["text"]
+            print("just before semdesk call")
+            action_response = semdesk.use(action, **action_params)
+            print(f"\n\n\n\njust after semdesk call. Rseponse type = {type(action_response)}")
+
+            console.print(f"action output: {action_response}", style="blue")
+            if action_response:
+                task.post_message(
+                    "assistant", f"👁️ Result from taking action: {action_response}"
+                )
+
+        screenshot_img = semdesk.desktop.take_screenshots()[-1]
+        console.print(f"screenshot img type: {type(screenshot_img)}")
+
+        # # Screenshot by taken semdesk is in the format "data:image/png;base64,iVBORw0KGgoAAAA..."
+        # # We should remove the "data:image/png;base64," part from the beginning and only keep the actual image part
+        # comma_index = screenshot_img.index(',')
+        # base64_image = screenshot_img[comma_index+1:]
+
+
+
+        buffer = BytesIO()
+        screenshot_img.save(buffer, format='PNG')
+        # img_bytes = screenshot_img.tobytes()
+        # base64_image = base64.b64encode(img_bytes).decode('utf-8')
+        base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        print(f"\n\n\n\n\nbase64_image: type = {type(base64_image)}\n len = {len(base64_image)}\n content = {base64_image[0:200]}")
+
+        # image.save(buffered, format="JPEG")
+        # img_str = base64.b64encode(buffered.getvalue())
+
+        return ToolResult(output=None, error=None, base64_image=base64_image)
+
+    def _maybe_prepend_system_tool_result(self, result: ToolResult, result_text: str):
+        if result.system:
+            result_text = f"<system>{result.system}</system>\n{result_text}"
+        return result_text
+
+    def _make_api_tool_result(self, 
+        result: ToolResult, tool_use_id: str
+    ) -> BetaToolResultBlockParam:
+        """Convert an agent ToolResult to an API ToolResultBlockParam."""
+        tool_result_content: list[BetaTextBlockParam | BetaImageBlockParam] | str = []
+        is_error = False
+        if result.error:
+            is_error = True
+            tool_result_content = self._maybe_prepend_system_tool_result(result, result.error)
+        else:
+            if result.output:
+                tool_result_content.append(
+                    {
+                        "type": "text",
+                        "text": self._maybe_prepend_system_tool_result(result, result.output),
+                    }
+                )
+            if result.base64_image:
+                tool_result_content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": result.base64_image,
+                        },
+                    }
+                )
+        return {
+            "type": "tool_result",
+            "content": tool_result_content,
+            "tool_use_id": tool_use_id,
+            "is_error": is_error,
+        }
 
     @classmethod
     def supported_devices(cls) -> List[Type[Device]]:
