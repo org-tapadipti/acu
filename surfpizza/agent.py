@@ -42,7 +42,7 @@ from anthropic.types.beta import (
 )
 
 from .tool import SemanticDesktop, router
-from .anthropic import ComputerTool, ToolCollection, ToolResult
+from .anthropic import ComputerTool, ToolCollection, ToolResult, response_to_params, make_api_tool_result
 
 logging.basicConfig(level=logging.INFO)
 logger: Final = logging.getLogger(__name__)
@@ -263,7 +263,7 @@ class SurfPizza(TaskAgent):
             f_response = raw_response.parse()
             print(f"\n\n\nFreshly parsed Response type:\n{type(f_response)}")
             print(f"Response:\n{f_response}")
-            response_params = self._response_to_params(f_response)
+            response_params = response_to_params(f_response)
             print(f"\n\n\nresponse_params type:\n{type(response_params)}")
             print(f"response_params:\n{response_params}")
 
@@ -346,7 +346,7 @@ class SurfPizza(TaskAgent):
                         )
 
                         tool_result_content.append(
-                            self._make_api_tool_result(result, content_block["id"])
+                            make_api_tool_result(result, content_block["id"])
                         )
 
                         msg = RoleMessage(
@@ -392,17 +392,6 @@ class SurfPizza(TaskAgent):
             task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
             raise e
 
-    def _response_to_params(self, 
-        response: BetaMessage,
-    ) -> list[BetaTextBlockParam | BetaToolUseBlockParam]:
-        res: list[BetaTextBlockParam | BetaToolUseBlockParam] = []
-        for block in response.content:
-            if isinstance(block, BetaTextBlock):
-                res.append({"type": "text", "text": block.text})
-            else:
-                res.append(cast(BetaToolUseBlockParam, block.model_dump()))
-        return res
-
     def _execute_action(self, semdesk, task, action_name, action_params) -> ToolResult:
         if action_name != "screenshot":
             action = semdesk.find_action(action_name)
@@ -446,46 +435,6 @@ class SurfPizza(TaskAgent):
         # img_str = base64.b64encode(buffered.getvalue())
 
         return ToolResult(output=None, error=None, base64_image=base64_image)
-
-    def _maybe_prepend_system_tool_result(self, result: ToolResult, result_text: str):
-        if result.system:
-            result_text = f"<system>{result.system}</system>\n{result_text}"
-        return result_text
-
-    def _make_api_tool_result(self, 
-        result: ToolResult, tool_use_id: str
-    ) -> BetaToolResultBlockParam:
-        """Convert an agent ToolResult to an API ToolResultBlockParam."""
-        tool_result_content: list[BetaTextBlockParam | BetaImageBlockParam] | str = []
-        is_error = False
-        if result.error:
-            is_error = True
-            tool_result_content = self._maybe_prepend_system_tool_result(result, result.error)
-        else:
-            if result.output:
-                tool_result_content.append(
-                    {
-                        "type": "text",
-                        "text": self._maybe_prepend_system_tool_result(result, result.output),
-                    }
-                )
-            if result.base64_image:
-                tool_result_content.append(
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": result.base64_image,
-                        },
-                    }
-                )
-        return {
-            "type": "tool_result",
-            "content": tool_result_content,
-            "tool_use_id": tool_use_id,
-            "is_error": is_error,
-        }
 
     @classmethod
     def supported_devices(cls) -> List[Type[Device]]:
