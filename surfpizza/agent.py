@@ -19,12 +19,7 @@ from tenacity import before_sleep_log, retry, stop_after_attempt
 from threadmem import RoleThread
 from toolfuse.util import AgentUtils
 
-from anthropic import (
-    Anthropic,
-    APIError,
-    APIResponseValidationError,
-    APIStatusError,
-)
+from anthropic import Anthropic
 from anthropic.types.beta import (
     BetaMessageParam,
     BetaTextBlockParam,
@@ -92,7 +87,7 @@ class SurfPizza(TaskAgent):
         console.print(f"Desktop info: {screen_size}")
 
         # Define Anthropic Computer Use tool. Refer to the docs at https://docs.anthropic.com/en/docs/build-with-claude/computer-use#computer-tool
-        self.tool_collection = [
+        self.tools = [
             {
                 "type": "computer_20241022",
                 "name": "computer",
@@ -103,20 +98,7 @@ class SurfPizza(TaskAgent):
         ]
 
         console.print("tools: ", style="purple")
-        console.print(JSON.from_data(self.tool_collection))
-
-        self.tool_mapping = {
-            "key": "hot_key",
-            "type": "type_text",
-            "mouse_move": "move_mouse",
-            "left_click": "click",
-            "left_click_drag": "drag_mouse",
-            "right_click": "N/A",
-            "middle_click": "N/A",
-            "double_click": "double_click",
-            "screenshot": "take_screenshots",
-            "cursor_position": "mouse_coordinates",
-        }
+        console.print(JSON.from_data(self.tools))
 
         # Create our thread and start with the task description and system prompt
         messages = []
@@ -148,6 +130,19 @@ class SurfPizza(TaskAgent):
             text=f"{SYSTEM_PROMPT}",
         )
 
+        self.action_mapping = {
+            "key": "hot_key",
+            "type": "type_text",
+            "mouse_move": "move_mouse",
+            "left_click": "click",
+            "left_click_drag": "drag_mouse",
+            "right_click": "N/A",
+            "middle_click": "N/A",
+            "double_click": "double_click",
+            "screenshot": "take_screenshots",
+            "cursor_position": "mouse_coordinates",
+        }
+
         for i in range(max_steps):
             console.print(f"-------step {i + 1}", style="green")
 
@@ -175,7 +170,7 @@ class SurfPizza(TaskAgent):
         return task
 
     @retry(
-        stop=stop_after_attempt(1),
+        stop=stop_after_attempt(5),
         before_sleep=before_sleep_log(logger, logging.INFO),
     )
     def take_action(
@@ -217,7 +212,7 @@ class SurfPizza(TaskAgent):
                     messages=messages,
                     model="claude-3-5-sonnet-20241022",
                     system=[self.system],
-                    tools=self.tool_collection,
+                    tools=self.tools,
                     betas=["computer-use-2024-10-22"],
                 )
             except Exception as e:
@@ -226,13 +221,8 @@ class SurfPizza(TaskAgent):
                 task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
                 raise e
 
-            f_response = raw_response.parse()
-            print(f"\n\n\nFreshly parsed Response type:\n{type(f_response)}")
-            print(f"Response:\n{f_response}")
-            print(f"stop reason:\n{f_response.stop_reason}")
-            response_params = response_to_params(f_response)
-            print(f"\n\n\nresponse_params type:\n{type(response_params)}")
-            print(f"response_params:\n{response_params}")
+            response = raw_response.parse()
+            response_params = response_to_params(response)
 
             messages.append(
                 {
@@ -241,7 +231,7 @@ class SurfPizza(TaskAgent):
                 }
             )
 
-            if f_response.stop_reason == "end_turn":
+            if response.stop_reason == "end_turn":
                 console.print("final result: ", style="green")
                 console.print(JSON.from_data(response_params[0]))
                 task.post_message(
@@ -260,7 +250,7 @@ class SurfPizza(TaskAgent):
                     task.post_message("assistant", f"👁️ {content_block.get('text')}")
                 elif content_block["type"] == "tool_use":
                     input_args = cast(dict[str, Any], content_block["input"])
-                    action_name = self.tool_mapping[input_args["action"]]
+                    action_name = self.action_mapping[input_args["action"]]
                     console.print(f"found action: {action_name}", style="blue")
                     
                     task.post_message(
