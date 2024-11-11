@@ -225,6 +225,7 @@ class SurfPizza(TaskAgent):
                         "content": response_params,
                     }
                 )
+
             except Exception as e:
                 console.print(f"Response failed to parse: {e}", style="red")
                 raise
@@ -243,7 +244,6 @@ class SurfPizza(TaskAgent):
 
             tool_result_content: list[BetaToolResultBlockParam] = []
 
-            # Find the selected action in the tool
             for content_block in response_params:
                 if content_block["type"] == "text":
                     task.post_message("assistant", f"👁️ {content_block.get('text')}")
@@ -269,19 +269,20 @@ class SurfPizza(TaskAgent):
 
                     # Take the selected action
                     try:
-                        if action_name != "screenshot":
+                        if action_name != "take_screenshots": # Do not execute if the action is screenshot, coz we take the screenshot later anyway
                             action_params = self._get_mapped_action_params(action_name, action_params)
                             action_response = semdesk.use(action, **action_params)
+
+                            console.print(f"action output: {action_response}", style="blue")
+
+                            if action_response:
+                                task.post_message(
+                                    "assistant", f"👁️ Result from taking action: {action_response}"
+                                )
                     except Exception as e:
                         raise ValueError(f"Trouble using action: {e}")
 
-                    console.print(f"action output: {action_response}", style="blue")
-
-                    if action_response:
-                        task.post_message(
-                            "assistant", f"👁️ Result from taking action: {action_response}"
-                        )
-
+                    # Take the screenshot after executing the action, or if the action itself is screenshot
                     screenshot_img = semdesk.desktop.take_screenshots()[-1]
                     console.print(f"screenshot img type: {type(screenshot_img)}")
 
@@ -325,23 +326,6 @@ class SurfPizza(TaskAgent):
                 action_params["keys"] = [action_params["text"]]
                 del action_params["text"]
             return action_params
-
-        #     action_response = semdesk.use(action, **action_params)
-        #     console.print(f"action output: {action_response}", style="blue")
-
-        #     if action_response:
-        #         task.post_message(
-        #             "assistant", f"👁️ Result from taking action: {action_response}"
-        #         )
-
-        # screenshot_img = semdesk.desktop.take_screenshots()[-1]
-        # console.print(f"screenshot img type: {type(screenshot_img)}")
-
-        # buffer = BytesIO()
-        # screenshot_img.save(buffer, format='PNG')
-        # base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-        # return ToolResult(output=None, error=None, base64_image=base64_image)
 
     @classmethod
     def supported_devices(cls) -> List[Type[Device]]:
