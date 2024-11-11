@@ -40,33 +40,9 @@ logger.setLevel(int(os.getenv("LOG_LEVEL", str(logging.DEBUG))))
 
 console = Console(force_terminal=True)
 
-# Define Anthropic Computer Use tool. Refer to the docs at https://docs.anthropic.com/en/docs/build-with-claude/computer-use#computer-tool
-tool_collection = [
-        {
-          "type": "computer_20241022",
-          "name": "computer",
-          "display_width_px": 1024,
-          "display_height_px": 768,
-          "display_number": 1,
-        },
-]
-
 if not os.environ.get("ANTHROPIC_API_KEY"):
     raise ValueError ("Please set the ANTHROPIC_API_KEY in your environment.")
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-tools_mapping = {
-    "key": "hot_key",
-    "type": "type_text",
-    "mouse_move": "move_mouse",
-    "left_click": "click",
-    "left_click_drag": "drag_mouse",
-    "right_click": "N/A",
-    "middle_click": "N/A",
-    "double_click": "double_click",
-    "screenshot": "take_screenshots",
-    "cursor_position": "mouse_coordinates",
-}
 
 class SurfPizzaConfig(BaseModel):
     pass
@@ -115,7 +91,42 @@ class SurfPizza(TaskAgent):
         screen_size = info["screen_size"]
         console.print(f"Desktop info: {screen_size}")
 
-        # This prompt is a modified copy of the prompt from Anthropic's Computer Use Demo project
+        # Define Anthropic Computer Use tool. Refer to the docs at https://docs.anthropic.com/en/docs/build-with-claude/computer-use#computer-tool
+        self.tool_collection = [
+            {
+                "type": "computer_20241022",
+                "name": "computer",
+                "display_width_px": 1024,
+                "display_height_px": 768,
+                "display_number": 1,
+            },
+        ]
+
+        console.print("tools: ", style="purple")
+        console.print(JSON.from_data(self.tool_collection))
+
+        self.tool_mapping = {
+            "key": "hot_key",
+            "type": "type_text",
+            "mouse_move": "move_mouse",
+            "left_click": "click",
+            "left_click_drag": "drag_mouse",
+            "right_click": "N/A",
+            "middle_click": "N/A",
+            "double_click": "double_click",
+            "screenshot": "take_screenshots",
+            "cursor_position": "mouse_coordinates",
+        }
+
+        # Create our thread and start with the task description and system prompt
+        messages = []
+        messages.append(
+            {
+                "role": "user",
+                "content": [BetaTextBlockParam(type="text", text=task.description)],
+            })
+
+        # The following prompt is a modified copy of the prompt from Anthropic's Computer Use Demo project
         # Some other code lines in this file are also copied from Anthropic's Computer Use Demo project
         # Original file: https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo/computer_use_demo/tools
 
@@ -137,19 +148,11 @@ class SurfPizza(TaskAgent):
             text=f"{SYSTEM_PROMPT}",
         )
 
-        # Create the messages thread and start with the task description
-        messages = []
-        messages.append(
-            {
-                "role": "user",
-                "content": [BetaTextBlockParam(type="text", text=task.description)],
-            })
-
         for i in range(max_steps):
             console.print(f"-------step {i + 1}", style="green")
 
             try:
-                messages, done = self.take_action(semdesk, messages, task)
+                messages, done = self.take_action(semdesk, task, messages)
             except Exception as e:
                 console.print(f"Error: {e}", style="red")
                 task.status = TaskStatus.FAILED
@@ -178,8 +181,8 @@ class SurfPizza(TaskAgent):
     def take_action(
         self,
         semdesk: SemanticDesktop,
-        messages: list[BetaMessageParam],
         task: Task,
+        messages: list[BetaMessageParam],
     ) -> Tuple[RoleThread, bool]:
         """Take an action
 
@@ -214,19 +217,14 @@ class SurfPizza(TaskAgent):
                     messages=messages,
                     model="claude-3-5-sonnet-20241022",
                     system=[self.system],
-                    tools=tool_collection,#.to_params(),
+                    tools=self.tool_collection,
                     betas=["computer-use-2024-10-22"],
                 )
-            except (APIStatusError, APIResponseValidationError, APIError) as e:
-                console.print("Error taking action: ", e)
-                traceback.print_exc()
-                task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
-                return messages, True
             except Exception as e:
-                console.print("Exception taking action: ", e)
+                console.print(f"Could not get response: {e}", style="red")
                 traceback.print_exc()
                 task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
-                return messages, True
+                raise e
 
             f_response = raw_response.parse()
             print(f"\n\n\nFreshly parsed Response type:\n{type(f_response)}")
@@ -255,12 +253,15 @@ class SurfPizza(TaskAgent):
                 return messages, True
 
             tool_result_content: list[BetaToolResultBlockParam] = []
+
+            # Find the selected action in the tool
             for content_block in response_params:
                 if content_block["type"] == "text":
                     task.post_message("assistant", f"👁️ {content_block.get('text')}")
                 elif content_block["type"] == "tool_use":
                     input_args = cast(dict[str, Any], content_block["input"])
-                    action_name = tools_mapping[input_args["action"]]
+                    action_name = self.tool_mapping[input_args["action"]]
+                    console.print(f"found action: {action_name}", style="blue")
                     
                     task.post_message(
                         "assistant",
@@ -270,6 +271,7 @@ class SurfPizza(TaskAgent):
                     action_params = input_args.copy()
                     del action_params["action"]
 
+                    # Take the selected action
                     try:
                         result = self._execute_action(semdesk, task, action_name, action_params)
 
@@ -285,10 +287,7 @@ class SurfPizza(TaskAgent):
                         )
 
                     except Exception as e:
-                        print(f"Error occurred: {str(e)}")
-                        print(f"Error type: {type(e)}")
-                        raise
-                    print("Finished tool_use")
+                        raise ValueError(f"Trouble using action: {e}")
             
             if not tool_result_content:
                 return messages, True
@@ -306,7 +305,11 @@ class SurfPizza(TaskAgent):
     def _execute_action(self, semdesk, task, action_name, action_params) -> ToolResult:
         if action_name != "screenshot":
             action = semdesk.find_action(action_name)
-            console.print(f"\n\naction parameters: {action_params}")
+            console.print(f"found action: {action}", style="blue")
+            if not action:
+                console.print(f"action returned not found: {action_name}")
+                raise SystemError("action not found")
+
             if action_name in ["move_mouse", "drag_mouse"] and "coordinate" in action_params:
                 action_params["x"] = action_params["coordinate"][0]
                 action_params["y"] = action_params["coordinate"][1]
@@ -314,11 +317,10 @@ class SurfPizza(TaskAgent):
             if action_name == "hot_key" and "text" in action_params:
                 action_params["keys"] = [action_params["text"]]
                 del action_params["text"]
-            print("just before semdesk call")
-            action_response = semdesk.use(action, **action_params)
-            print(f"\n\n\n\njust after semdesk call. Rseponse type = {type(action_response)}")
 
+            action_response = semdesk.use(action, **action_params)
             console.print(f"action output: {action_response}", style="blue")
+
             if action_response:
                 task.post_message(
                     "assistant", f"👁️ Result from taking action: {action_response}"
@@ -330,7 +332,6 @@ class SurfPizza(TaskAgent):
         buffer = BytesIO()
         screenshot_img.save(buffer, format='PNG')
         base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        print(f"\n\n\n\n\nbase64_image: type = {type(base64_image)}\n len = {len(base64_image)}\n content = {base64_image[0:200]}")
 
         return ToolResult(output=None, error=None, base64_image=base64_image)
 
