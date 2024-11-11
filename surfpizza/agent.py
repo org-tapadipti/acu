@@ -206,31 +206,30 @@ class SurfPizza(TaskAgent):
 
             console.print("taking action...", style="white")
 
-            try:
-                raw_response = client.beta.messages.with_raw_response.create(
-                    max_tokens=4096,
-                    messages=messages,
-                    model="claude-3-5-sonnet-20241022",
-                    system=[self.system],
-                    tools=self.tools,
-                    betas=["computer-use-2024-10-22"],
-                )
-            except Exception as e:
-                console.print(f"Could not get response: {e}", style="red")
-                traceback.print_exc()
-                task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
-                raise e
-
-            response = raw_response.parse()
-            response_params = response_to_params(response)
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": response_params,
-                }
+            raw_response = client.beta.messages.with_raw_response.create(
+                max_tokens=4096,
+                messages=messages,
+                model="claude-3-5-sonnet-20241022",
+                system=[self.system],
+                tools=self.tools,
+                betas=["computer-use-2024-10-22"],
             )
 
+            try:
+                response = raw_response.parse()
+                response_params = response_to_params(response)
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response_params,
+                    }
+                )
+            except Exception as e:
+                console.print(f"Response failed to parse: {e}", style="red")
+                raise
+
+            # The agent will return 'end_turn' if it believes it's finished
             if response.stop_reason == "end_turn":
                 console.print("final result: ", style="green")
                 console.print(JSON.from_data(response_params[0]))
@@ -261,23 +260,47 @@ class SurfPizza(TaskAgent):
                     action_params = input_args.copy()
                     del action_params["action"]
 
+                    # Find the selected action in the tool
+                    action = semdesk.find_action(action_name)
+                    console.print(f"found action: {action}", style="blue")
+                    if not action:
+                        console.print(f"action returned not found: {action_name}")
+                        raise SystemError("action not found")
+
                     # Take the selected action
                     try:
-                        result = self._execute_action(semdesk, task, action_name, action_params)
-
-                        task.post_message(
-                            "assistant",
-                            "current image",
-                            # images=result.base64_image,
-                            thread="debug",
-                        )
-
-                        tool_result_content.append(
-                            make_api_tool_result(result, content_block["id"])
-                        )
-
+                        if action_name != "screenshot":
+                            action_params = self._get_mapped_action_params(action_name, action_params)
+                            action_response = semdesk.use(action, **action_params)
                     except Exception as e:
                         raise ValueError(f"Trouble using action: {e}")
+
+                    console.print(f"action output: {action_response}", style="blue")
+
+                    if action_response:
+                        task.post_message(
+                            "assistant", f"👁️ Result from taking action: {action_response}"
+                        )
+
+                    screenshot_img = semdesk.desktop.take_screenshots()[-1]
+                    console.print(f"screenshot img type: {type(screenshot_img)}")
+
+                    buffer = BytesIO()
+                    screenshot_img.save(buffer, format='PNG')
+                    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+                    result = ToolResult(output=None, error=None, base64_image=base64_image)
+
+                    task.post_message(
+                        "assistant",
+                        "current image",
+                        # images=result.base64_image,
+                        thread="debug",
+                    )
+
+                    tool_result_content.append(
+                        make_api_tool_result(result, content_block["id"])
+                    )
             
             if not tool_result_content:
                 return messages, True
@@ -292,14 +315,8 @@ class SurfPizza(TaskAgent):
             task.post_message("assistant", f"⚠️ Error taking action: {e} -- retrying...")
             raise e
 
-    def _execute_action(self, semdesk, task, action_name, action_params) -> ToolResult:
+    def _get_mapped_action_params(self, action_name, action_params) -> ToolResult:
         if action_name != "screenshot":
-            action = semdesk.find_action(action_name)
-            console.print(f"found action: {action}", style="blue")
-            if not action:
-                console.print(f"action returned not found: {action_name}")
-                raise SystemError("action not found")
-
             if action_name in ["move_mouse", "drag_mouse"] and "coordinate" in action_params:
                 action_params["x"] = action_params["coordinate"][0]
                 action_params["y"] = action_params["coordinate"][1]
@@ -307,23 +324,24 @@ class SurfPizza(TaskAgent):
             if action_name == "hot_key" and "text" in action_params:
                 action_params["keys"] = [action_params["text"]]
                 del action_params["text"]
+            return action_params
 
-            action_response = semdesk.use(action, **action_params)
-            console.print(f"action output: {action_response}", style="blue")
+        #     action_response = semdesk.use(action, **action_params)
+        #     console.print(f"action output: {action_response}", style="blue")
 
-            if action_response:
-                task.post_message(
-                    "assistant", f"👁️ Result from taking action: {action_response}"
-                )
+        #     if action_response:
+        #         task.post_message(
+        #             "assistant", f"👁️ Result from taking action: {action_response}"
+        #         )
 
-        screenshot_img = semdesk.desktop.take_screenshots()[-1]
-        console.print(f"screenshot img type: {type(screenshot_img)}")
+        # screenshot_img = semdesk.desktop.take_screenshots()[-1]
+        # console.print(f"screenshot img type: {type(screenshot_img)}")
 
-        buffer = BytesIO()
-        screenshot_img.save(buffer, format='PNG')
-        base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        # buffer = BytesIO()
+        # screenshot_img.save(buffer, format='PNG')
+        # base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-        return ToolResult(output=None, error=None, base64_image=base64_image)
+        # return ToolResult(output=None, error=None, base64_image=base64_image)
 
     @classmethod
     def supported_devices(cls) -> List[Type[Device]]:
